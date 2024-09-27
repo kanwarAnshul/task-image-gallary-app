@@ -1,42 +1,53 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { StyleSheet, Text, View, FlatList, Image, ActivityIndicator, Alert, TouchableOpacity } from 'react-native'
+import { StyleSheet, Text, View, FlatList, Image, ActivityIndicator, TouchableOpacity, TextInput } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { DrawerLayoutAndroid } from 'react-native'
+import { Snackbar } from 'react-native-paper'
+import { useNavigation } from '@react-navigation/native'
+import { createStackNavigator } from '@react-navigation/stack'
 import menu from '../assets/images/menu.png'
 
 const FLICKR_API_URL =
-  'https://api.flickr.com/services/rest/?method=flickr.photos.getRecent&per_page=20&page=1&api_key=6f102c62f41998d151e5a1b48713cf13&format=json&nojsoncallback=1&extras=url_s'
+  'https://api.flickr.com/services/rest/?method=flickr.photos.getRecent&api_key=6f102c62f41998d151e5a1b48713cf13&format=json&nojsoncallback=1&extras=url_s'
+
+const FLICKR_SEARCH_API_URL =
+  'https://api.flickr.com/services/rest/?method=flickr.photos.search&api_key=6f102c62f41998d151e5a1b48713cf13&format=json&nojsoncallback=1&extras=url_s&text='
 
 const Home = () => {
   const [photos, setPhotos] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(1)
   const [error, setError] = useState(false)
-  const [isOffline, setIsOffline] = useState(false)
+  const [retryVisible, setRetryVisible] = useState(false)
+  const drawerRef = useRef<DrawerLayoutAndroid>(null)
+  const navigation = useNavigation()
 
-  const drawerRef = useRef<DrawerLayoutAndroid>(null) 
+  const fetchImages = async (newPage: number) => {
+    setLoading(true)
+    setError(false)
 
-  const fetchImages = async () => {
     try {
-      const response = await fetch(FLICKR_API_URL)
+      const response = await fetch(`${FLICKR_API_URL}&page=${newPage}&per_page=20`)
+      if (!response.ok) {
+        throw new Error('Network response was not ok')
+      }
       const json = await response.json()
       const newPhotos = json.photos.photo
 
-      const cachedPhotos = await AsyncStorage.getItem('cachedPhotos')
-
-      if (!cachedPhotos || JSON.stringify(newPhotos) !== cachedPhotos) {
-        await AsyncStorage.setItem('cachedPhotos', JSON.stringify(newPhotos))
-        setPhotos(newPhotos) 
+      if (newPage === 1) {
+        setPhotos(newPhotos) // On first load, replace photos
       } else {
-        setPhotos(JSON.parse(cachedPhotos))
+        setPhotos((prevPhotos) => [...prevPhotos, ...newPhotos]) // On pagination, append new photos
       }
 
-      setLoading(false)
+      await AsyncStorage.setItem('cachedPhotos', JSON.stringify(newPhotos))
     } catch (err) {
-      console.log('Error fetching images:', err)
+      console.error('Error fetching images:', err)
       setError(true)
-      setLoading(false)
-
+      setRetryVisible(true)
       loadCachedImages()
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -44,14 +55,17 @@ const Home = () => {
     const cachedPhotos = await AsyncStorage.getItem('cachedPhotos')
     if (cachedPhotos) {
       setPhotos(JSON.parse(cachedPhotos))
-      setIsOffline(true) 
-      setLoading(false)
     }
   }
 
+  const handleRetry = () => {
+    setRetryVisible(false)
+    fetchImages(page)
+  }
+
   useEffect(() => {
-    fetchImages().catch(() => loadCachedImages())
-  }, [])
+    fetchImages(page).catch(() => loadCachedImages())
+  }, [page])
 
   const renderImage = ({ item }: any) => (
     <View style={styles.imageContainer}>
@@ -59,16 +73,40 @@ const Home = () => {
     </View>
   )
 
-  const handleHomePress = () => {
-    drawerRef.current?.closeDrawer() 
-    Alert.alert('Home Pressed', 'You clicked the Home option!')
+  const loadMoreImages = (direction: 'next' | 'prev') => {
+    if (direction === 'next') {
+      setPage((prevPage) => prevPage + 1)
+    } else {
+      setPage((prevPage) => (prevPage > 1 ? prevPage - 1 : 1))
+    }
+  }
+
+  const handleSearchPress = () => {
+    drawerRef.current?.closeDrawer()
+    navigation.navigate('Search')
   }
 
   const navigationView = (
     <View style={styles.drawerContainer}>
       <Text style={styles.drawerTitle}>Menu</Text>
-      <TouchableOpacity onPress={handleHomePress} style={styles.drawerItem}>
-        <Text style={styles.drawerItemText}>Home</Text>
+      <TouchableOpacity onPress={handleSearchPress} style={styles.drawerItem}>
+        <Text style={styles.drawerItemText}>Search</Text>
+      </TouchableOpacity>
+    </View>
+  )
+
+  const PaginationButtons = () => (
+    <View style={styles.paginationContainer}>
+      <TouchableOpacity
+        style={[styles.paginationButton, page === 1 && styles.disabledButton]}
+        onPress={() => loadMoreImages('prev')}
+        disabled={page === 1}
+      >
+        <Text style={styles.paginationText}>Previous</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.paginationButton} onPress={() => loadMoreImages('next')}>
+        <Text style={styles.paginationText}>Next</Text>
       </TouchableOpacity>
     </View>
   )
@@ -80,7 +118,6 @@ const Home = () => {
       drawerPosition="left"
       renderNavigationView={() => navigationView}
     >
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <TouchableOpacity onPress={() => drawerRef.current?.openDrawer()}>
@@ -90,13 +127,10 @@ const Home = () => {
         </View>
       </View>
 
-      {/* Main Content */}
-      {loading ? (
+      {loading && !photos.length ? (
         <ActivityIndicator size="large" color="green" />
       ) : error ? (
         <Text style={styles.errorText}>Error loading images. Please try again.</Text>
-      ) : isOffline ? (
-        <Text style={styles.offlineText}>You are viewing cached images</Text>
       ) : null}
 
       <FlatList
@@ -105,12 +139,88 @@ const Home = () => {
         keyExtractor={(item) => item.id}
         numColumns={2}
         contentContainerStyle={styles.imageGrid}
+        ListFooterComponent={loading ? <ActivityIndicator size="small" color="green" /> : <PaginationButtons />}
       />
+
+      <Snackbar
+        visible={retryVisible}
+        onDismiss={() => setRetryVisible(false)}
+        action={{ label: 'Retry', onPress: handleRetry }}
+      >
+        Network error. Please try again.
+      </Snackbar>
     </DrawerLayoutAndroid>
   )
 }
 
-export default Home
+// Search component
+const Search = () => {
+  const [searchTerm, setSearchTerm] = useState('')
+  const [searchResults, setSearchResults] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(false)
+  const navigation = useNavigation()
+
+  const handleSearch = async () => {
+    setLoading(true)
+    setError(false)
+
+    try {
+      const response = await fetch(`${FLICKR_SEARCH_API_URL}${searchTerm}`)
+      const json = await response.json()
+      setSearchResults(json.photos.photo)
+    } catch (err) {
+      setError(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const renderImage = ({ item }: any) => (
+    <View style={styles.imageContainer}>
+      <Image source={{ uri: item.url_s }} style={styles.image} />
+    </View>
+  )
+
+  return (
+    <View style={styles.container}>
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search images..."
+        value={searchTerm}
+        onChangeText={setSearchTerm}
+        onSubmitEditing={handleSearch}
+      />
+
+      {loading ? (
+        <ActivityIndicator size="large" color="green" />
+      ) : error ? (
+        <Text style={styles.errorText}>Error loading images. Please try again.</Text>
+      ) : (
+        <FlatList
+          data={searchResults}
+          renderItem={renderImage}
+          keyExtractor={(item) => item.id}
+          numColumns={2}
+          contentContainerStyle={styles.imageGrid}
+        />
+      )}
+    </View>
+  )
+}
+
+const Stack = createStackNavigator()
+
+const App = () => {
+  return (
+    <Stack.Navigator initialRouteName="Home">
+      <Stack.Screen name="Home" component={Home} options={{ headerShown: false }} />
+      <Stack.Screen name="Search" component={Search} />
+    </Stack.Navigator>
+  )
+}
+
+export default App
 
 const styles = StyleSheet.create({
   container: {
@@ -118,60 +228,59 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
     padding: 12,
   },
-  imageGrid: {
-    justifyContent: 'space-between',
-    paddingBottom: 10,
-  },
-  header: {
-    paddingVertical: 20,
-    backgroundColor: '#fff',
-    borderBottomWidth: 2,
-    borderBottomColor: '#eaeaea',
+  searchInput: {
+    height: 40,
+    borderColor: '#ccc',
+    borderWidth: 1,
     marginBottom: 12,
+    paddingHorizontal: 8,
   },
-  headerContent: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-  },
-  menuIcon: {
-    width: 30,
-    height: 25,
-    marginRight: 12,  
-  },
-  headerText: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#FF6347',  
+  imageGrid: {
+    justifyContent: 'center',
+    paddingBottom: 50,
   },
   imageContainer: {
     flex: 1,
-    marginBottom: 12,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 5,
-    elevation: 3,
-    padding: 8,
+    margin: 5,
   },
   image: {
     width: '100%',
     height: 150,
-    borderRadius: 8,
-    resizeMode: 'cover',
+    borderRadius: 10,
   },
-  navbar: {
+  header: {
+    backgroundColor: '#2196F3',
+    padding: 10,
     flexDirection: 'row',
-    backgroundColor: '#000',
-    padding: 16,
-    justifyContent: 'space-between',
     alignItems: 'center',
   },
-  navTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
+  headerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerText: {
+    color: '#fff',
+    fontSize: 18,
+    marginLeft: 10,
+  },
+  menuIcon: {
+    width: 30,
+    height: 30,
+  },
+  paginationContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: 10,
+  },
+  paginationButton: {
+    padding: 10,
+    backgroundColor: '#2196F3',
+    borderRadius: 5,
+  },
+  disabledButton: {
+    backgroundColor: '#ccc',
+  },
+  paginationText: {
     color: '#fff',
   },
   drawerContainer: {
@@ -182,27 +291,17 @@ const styles = StyleSheet.create({
   drawerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#000',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   drawerItem: {
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    marginBottom: 10,
   },
   drawerItemText: {
     fontSize: 18,
-    color: '#333',
   },
   errorText: {
-    color: '#d9534f',
-    fontSize: 16,
+    color: 'red',
     textAlign: 'center',
-  },
-  offlineText: {
-    fontSize: 16,
-    color: '#555',
-    textAlign: 'center',
-    marginBottom: 12,
+    marginTop: 20,
   },
 })
